@@ -364,3 +364,41 @@ class SparkUtils:
                  .alias(new_col_name))
         
         return df_concatenated
+    
+    
+    def concatenate_dataframes(dfs):
+    return functools.reduce(DataFrame.union, dfs)
+
+
+    def forward_fill_dataframe(df, partition_cols, filling_cols):
+        forward_fill_window = Window.partitionBy(partition_cols).rowsBetween(-sys.maxsize, 0)
+        for column in filling_cols:
+            filled_column_values = F.last(df[column], ignorenulls=True).over(forward_fill_window)
+            df = df.withColumn(column, filled_column_values)
+
+        return df
+
+
+    def back_fill_dataframe(df, partition_col, columns_to_fill):
+        df = df.withColumn('Dummy_ID', F.monotonically_increasing_id())
+        # backfilled_df = df.withColumn('Dummy_ID', F.monotonically_increasing_id())
+        backfilled_final_df = df.select('Dummy_ID', 'PropHash')
+        for column_to_fill in columns_to_fill:
+            df_a = df.select('Dummy_ID', 'PropHash', column_to_fill)
+            df_b = df.select('Dummy_ID', 'PropHash', column_to_fill)
+            backfilled_df = df_a.crossJoin(df_b).where((df_a[partition_col] >= df_b[partition_col]) &
+                                                       (df_a[column_to_fill].isNotNull() |
+                                                        df_b[column_to_fill].isNotNull()))
+            #for c in backfilled_df.columns:
+            print('Column is {}'.format(column_to_fill))
+            back_fill_window = Window.partitionBy(df_a[partition_col]).orderBy(df_b[partition_col])
+            backfilled_df = backfilled_df.withColumn('row_num', F.row_number().over(back_fill_window))
+            backfilled_df = backfilled_df.filter(F.col('row_num') == 1)
+
+            backfilled_df = backfilled_df.select(df_a.Dummy_ID, df_a.PropHash,
+                                                 F.coalesce(df_a[column_to_fill], df_b[column_to_fill]).alias(column_to_fill))
+            backfilled_final_df = backfilled_final_df.join(backfilled_df,
+                                                           ['Dummy_ID', 'PropHash'],
+                                                           'left')
+        return backfilled_final_df
+
